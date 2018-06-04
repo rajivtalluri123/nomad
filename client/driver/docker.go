@@ -1010,6 +1010,20 @@ func (d *DockerDriver) cleanupImage(imageID string) error {
 	coordinator, callerID := d.getDockerCoordinator(client)
 	coordinator.RemoveImage(imageID, callerID)
 
+	// Make a best effort attempt to disconnect from network
+	// Errors from the disconnect attempt are not retried or logged
+	client, _, err := d.dockerClients()
+	if err != nil {
+		networks, err := client.ListNetworks()
+		if err != nil {
+			// Loop until finding the ID of the network containing this image
+			for _, net := range networks {
+				if _, ok := net.Containers[imageID]; ok {
+					client.DisconnectNetwork(net.ID, docker.NetworkConnectionOptions{Container: imageID, Force: true})
+				}
+			}
+		}
+	}
 	return nil
 }
 
