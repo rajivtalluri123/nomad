@@ -450,7 +450,7 @@ func TestNodeAntiAffinity_PenaltyNodes(t *testing.T) {
 	}
 	static := NewStaticRankIterator(ctx, nodes)
 
-	nodeAntiAffIter := NewNodeAntiAffinityIterator(ctx, static, 50.0)
+	nodeAntiAffIter := NewNodeReschedulingPenaltyIterator(ctx, static, 50.0)
 	nodeAntiAffIter.SetPenaltyNodes(map[string]struct{}{node1.ID: {}})
 
 	out := collectRanked(nodeAntiAffIter)

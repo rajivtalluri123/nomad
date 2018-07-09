@@ -66,7 +66,7 @@ type GenericStack struct {
 	distinctPropertyConstraint *DistinctPropertyIterator
 	binPack                    *BinPackIterator
 	jobAntiAff                 *JobAntiAffinityIterator
-	nodeAntiAff                *NodeAntiAffinityIterator
+	nodeReschedulingPenalty    *NodeReschedulingPenaltyIterator
 	limit                      *LimitIterator
 	maxScore                   *MaxScoreIterator
 }
@@ -129,10 +129,10 @@ func NewGenericStack(batch bool, ctx Context) *GenericStack {
 	}
 	s.jobAntiAff = NewJobAntiAffinityIterator(ctx, s.binPack, penalty, "")
 
-	s.nodeAntiAff = NewNodeAntiAffinityIterator(ctx, s.jobAntiAff, previousFailedAllocNodePenalty)
+	s.nodeReschedulingPenalty = NewNodeReschedulingPenaltyIterator(ctx, s.jobAntiAff, previousFailedAllocNodePenalty)
 
 	// Apply a limit function. This is to avoid scanning *every* possible node.
-	s.limit = NewLimitIterator(ctx, s.nodeAntiAff, 2, skipScoreThreshold, maxSkip)
+	s.limit = NewLimitIterator(ctx, s.nodeReschedulingPenalty, 2, skipScoreThreshold, maxSkip)
 
 	// Select the node with the maximum score for placement
 	s.maxScore = NewMaxScoreIterator(ctx, s.limit)
@@ -207,7 +207,7 @@ func (s *GenericStack) Select(tg *structs.TaskGroup, options *SelectOptions) (*R
 	s.wrappedChecks.SetTaskGroup(tg.Name)
 	s.binPack.SetTaskGroup(tg)
 	if options != nil {
-		s.nodeAntiAff.SetPenaltyNodes(options.PenaltyNodeIDs)
+		s.nodeReschedulingPenalty.SetPenaltyNodes(options.PenaltyNodeIDs)
 	}
 
 	if contextual, ok := s.quota.(ContextualIterator); ok {

@@ -305,20 +305,20 @@ func (iter *JobAntiAffinityIterator) Reset() {
 	iter.source.Reset()
 }
 
-// NodeAntiAffinityIterator is used to apply a penalty to
+// NodeReschedulingPenaltyIterator is used to apply a penalty to
 // a node that had a previous failed allocation for the same job.
 // This is used when attempting to reschedule a failed alloc
-type NodeAntiAffinityIterator struct {
+type NodeReschedulingPenaltyIterator struct {
 	ctx          Context
 	source       RankIterator
 	penalty      float64
 	penaltyNodes map[string]struct{}
 }
 
-// NewNodeAntiAffinityIterator is used to create a NodeAntiAffinityIterator that
+// NewNodeReschedulingPenaltyIterator is used to create a NodeReschedulingPenaltyIterator that
 // applies the given penalty for placement onto nodes in penaltyNodes
-func NewNodeAntiAffinityIterator(ctx Context, source RankIterator, penalty float64) *NodeAntiAffinityIterator {
-	iter := &NodeAntiAffinityIterator{
+func NewNodeReschedulingPenaltyIterator(ctx Context, source RankIterator, penalty float64) *NodeReschedulingPenaltyIterator {
+	iter := &NodeReschedulingPenaltyIterator{
 		ctx:     ctx,
 		source:  source,
 		penalty: penalty,
@@ -326,11 +326,11 @@ func NewNodeAntiAffinityIterator(ctx Context, source RankIterator, penalty float
 	return iter
 }
 
-func (iter *NodeAntiAffinityIterator) SetPenaltyNodes(penaltyNodes map[string]struct{}) {
+func (iter *NodeReschedulingPenaltyIterator) SetPenaltyNodes(penaltyNodes map[string]struct{}) {
 	iter.penaltyNodes = penaltyNodes
 }
 
-func (iter *NodeAntiAffinityIterator) Next() *RankedNode {
+func (iter *NodeReschedulingPenaltyIterator) Next() *RankedNode {
 	for {
 		option := iter.source.Next()
 		if option == nil {
@@ -346,7 +346,7 @@ func (iter *NodeAntiAffinityIterator) Next() *RankedNode {
 	}
 }
 
-func (iter *NodeAntiAffinityIterator) Reset() {
+func (iter *NodeReschedulingPenaltyIterator) Reset() {
 	iter.penaltyNodes = make(map[string]struct{})
 	iter.source.Reset()
 }
