@@ -8,19 +8,6 @@ import (
 )
 
 const (
-	// serviceJobAntiAffinityPenalty is the penalty applied
-	// to the score for placing an alloc on a node that
-	// already has an alloc for this job.
-	serviceJobAntiAffinityPenalty = 20.0
-
-	// batchJobAntiAffinityPenalty is the same as the
-	// serviceJobAntiAffinityPenalty but for batch type jobs.
-	batchJobAntiAffinityPenalty = 10.0
-
-	// previousFailedAllocNodePenalty is a scoring penalty for nodes
-	// that a failed allocation was previously run on
-	previousFailedAllocNodePenalty = 50.0
-
 	// skipScoreThreshold is a threshold used in the limit iterator to skip nodes
 	// that have a score lower than this. -10 is the highest possible score for a
 	// node with penalty (based on batchJobAntiAffinityPenalty)
@@ -28,6 +15,10 @@ const (
 
 	// maxSkip limits the number of nodes that can be skipped in the limit iterator
 	maxSkip = 3
+
+	// intraAffinityWeight is the scoring weight attached to normalized scores from
+	// different types of scoring factors
+	intraAffinityWeight = 0.25
 )
 
 // Stack is a chained collection of iterators. The stack is used to
@@ -69,6 +60,7 @@ type GenericStack struct {
 	nodeReschedulingPenalty    *NodeReschedulingPenaltyIterator
 	limit                      *LimitIterator
 	maxScore                   *MaxScoreIterator
+	scoreNorm                  *ScoreNormalizationIterator
 }
 
 // NewGenericStack constructs a stack used for selecting service placements
@@ -121,18 +113,15 @@ func NewGenericStack(batch bool, ctx Context) *GenericStack {
 	s.binPack = NewBinPackIterator(ctx, rankSource, evict, 0)
 
 	// Apply the job anti-affinity iterator. This is to avoid placing
-	// multiple allocations on the same node for this job. The penalty
-	// is less for batch jobs as it matters less.
-	penalty := serviceJobAntiAffinityPenalty
-	if batch {
-		penalty = batchJobAntiAffinityPenalty
-	}
-	s.jobAntiAff = NewJobAntiAffinityIterator(ctx, s.binPack, penalty, "")
+	// multiple allocations on the same node for this job.
+	s.jobAntiAff = NewJobAntiAffinityIterator(ctx, s.binPack, "")
 
-	s.nodeReschedulingPenalty = NewNodeReschedulingPenaltyIterator(ctx, s.jobAntiAff, previousFailedAllocNodePenalty)
+	s.nodeReschedulingPenalty = NewNodeReschedulingPenaltyIterator(ctx, s.jobAntiAff)
+
+	s.scoreNorm = NewScoreNormalizationIterator(ctx, s.nodeReschedulingPenalty)
 
 	// Apply a limit function. This is to avoid scanning *every* possible node.
-	s.limit = NewLimitIterator(ctx, s.nodeReschedulingPenalty, 2, skipScoreThreshold, maxSkip)
+	s.limit = NewLimitIterator(ctx, s.scoreNorm, 2, skipScoreThreshold, maxSkip)
 
 	// Select the node with the maximum score for placement
 	s.maxScore = NewMaxScoreIterator(ctx, s.limit)
@@ -166,7 +155,7 @@ func (s *GenericStack) SetJob(job *structs.Job) {
 	s.distinctHostsConstraint.SetJob(job)
 	s.distinctPropertyConstraint.SetJob(job)
 	s.binPack.SetPriority(job.Priority)
-	s.jobAntiAff.SetJob(job.ID)
+	s.jobAntiAff.SetJob(job)
 	s.ctx.Eligibility().SetJob(job)
 
 	if contextual, ok := s.quota.(ContextualIterator); ok {
@@ -206,6 +195,7 @@ func (s *GenericStack) Select(tg *structs.TaskGroup, options *SelectOptions) (*R
 	s.distinctPropertyConstraint.SetTaskGroup(tg)
 	s.wrappedChecks.SetTaskGroup(tg.Name)
 	s.binPack.SetTaskGroup(tg)
+	s.jobAntiAff.SetTaskGroup(tg)
 	if options != nil {
 		s.nodeReschedulingPenalty.SetPenaltyNodes(options.PenaltyNodeIDs)
 	}
@@ -241,6 +231,7 @@ type SystemStack struct {
 	taskGroupConstraint        *ConstraintChecker
 	distinctPropertyConstraint *DistinctPropertyIterator
 	binPack                    *BinPackIterator
+	scoreNorm                  *ScoreNormalizationIterator
 }
 
 // NewSystemStack constructs a stack used for selecting service placements
@@ -283,6 +274,9 @@ func NewSystemStack(ctx Context) *SystemStack {
 	// by a particular task group. Enable eviction as system jobs are high
 	// priority.
 	s.binPack = NewBinPackIterator(ctx, rankSource, true, 0)
+
+	// Apply score normalization
+	s.scoreNorm = NewScoreNormalizationIterator(ctx, s.binPack)
 	return s
 }
 
@@ -304,6 +298,7 @@ func (s *SystemStack) SetJob(job *structs.Job) {
 
 func (s *SystemStack) Select(tg *structs.TaskGroup, options *SelectOptions) (*RankedNode, *structs.Resources) {
 	// Reset the binpack selector and context
+	s.scoreNorm.Reset()
 	s.binPack.Reset()
 	s.ctx.Reset()
 	start := time.Now()
@@ -323,7 +318,7 @@ func (s *SystemStack) Select(tg *structs.TaskGroup, options *SelectOptions) (*Ra
 	}
 
 	// Get the next option that satisfies the constraints.
-	option := s.binPack.Next()
+	option := s.scoreNorm.Next()
 
 	// Ensure that the task resources were specified
 	if option != nil && len(option.TaskResources) != len(tg.Tasks) {

@@ -6,12 +6,19 @@ import (
 	"github.com/hashicorp/nomad/nomad/structs"
 )
 
+const (
+	// binPackingMaxFitScore is the maximum possible bin packing fitness score.
+	// This is used to normalize bin packing score to a value between 0 and 1
+	binPackingMaxFitScore = 18.0
+)
+
 // Rank is used to provide a score and various ranking metadata
 // along with a node when iterating. This state can be modified as
 // various rank methods are applied.
 type RankedNode struct {
 	Node          *structs.Node
-	Score         float64
+	FinalScore    float64
+	Scores        []float64
 	TaskResources map[string]*structs.Resources
 
 	// Allocs is used to cache the proposed allocations on the
@@ -20,7 +27,7 @@ type RankedNode struct {
 }
 
 func (r *RankedNode) GoString() string {
-	return fmt.Sprintf("<Node: %s Score: %0.3f>", r.Node.ID, r.Score)
+	return fmt.Sprintf("<Node: %s Score: %0.3f>", r.Node.ID, r.FinalScore)
 }
 
 func (r *RankedNode) ProposedAllocs(ctx Context) ([]*structs.Allocation, error) {
@@ -231,7 +238,8 @@ OUTER:
 
 		// Score the fit normally otherwise
 		fitness := structs.ScoreFit(option.Node, util)
-		option.Score += fitness
+		normalizedFit := float64(fitness) / float64(binPackingMaxFitScore)
+		option.Scores = append(option.Scores, normalizedFit)
 		iter.ctx.Metrics().ScoreNode(option.Node, "binpack", fitness)
 		return option
 	}
@@ -245,26 +253,31 @@ func (iter *BinPackIterator) Reset() {
 // along side other allocations from this job. This is used to help distribute
 // load across the cluster.
 type JobAntiAffinityIterator struct {
-	ctx     Context
-	source  RankIterator
-	penalty float64
-	jobID   string
+	ctx          Context
+	source       RankIterator
+	jobID        string
+	taskGroup    string
+	desiredCount int
 }
 
 // NewJobAntiAffinityIterator is used to create a JobAntiAffinityIterator that
 // applies the given penalty for co-placement with allocs from this job.
-func NewJobAntiAffinityIterator(ctx Context, source RankIterator, penalty float64, jobID string) *JobAntiAffinityIterator {
+func NewJobAntiAffinityIterator(ctx Context, source RankIterator, jobID string) *JobAntiAffinityIterator {
 	iter := &JobAntiAffinityIterator{
-		ctx:     ctx,
-		source:  source,
-		penalty: penalty,
-		jobID:   jobID,
+		ctx:    ctx,
+		source: source,
+		jobID:  jobID,
 	}
 	return iter
 }
 
-func (iter *JobAntiAffinityIterator) SetJob(jobID string) {
-	iter.jobID = jobID
+func (iter *JobAntiAffinityIterator) SetJob(job *structs.Job) {
+	iter.jobID = job.ID
+}
+
+func (iter *JobAntiAffinityIterator) SetTaskGroup(tg *structs.TaskGroup) {
+	iter.taskGroup = tg.Name
+	iter.desiredCount = tg.Count
 }
 
 func (iter *JobAntiAffinityIterator) Next() *RankedNode {
@@ -286,15 +299,16 @@ func (iter *JobAntiAffinityIterator) Next() *RankedNode {
 		// Determine the number of collisions
 		collisions := 0
 		for _, alloc := range proposed {
-			if alloc.JobID == iter.jobID {
+			if alloc.JobID == iter.jobID && alloc.TaskGroup == iter.taskGroup {
 				collisions += 1
 			}
 		}
 
-		// Apply a penalty if there are collisions
+		// Calculate the penalty based on number of collisions
+		// TODO(preetha): Figure out if batch jobs need a different scoring penalty where collisions matter less
 		if collisions > 0 {
-			scorePenalty := -1 * float64(collisions) * iter.penalty
-			option.Score += scorePenalty
+			scorePenalty := -1 * float64(collisions) / float64(iter.desiredCount)
+			option.Scores = append(option.Scores, scorePenalty)
 			iter.ctx.Metrics().ScoreNode(option.Node, "job-anti-affinity", scorePenalty)
 		}
 		return option
@@ -309,19 +323,18 @@ func (iter *JobAntiAffinityIterator) Reset() {
 // a node that had a previous failed allocation for the same job.
 // This is used when attempting to reschedule a failed alloc
 type NodeReschedulingPenaltyIterator struct {
-	ctx          Context
-	source       RankIterator
-	penalty      float64
-	penaltyNodes map[string]struct{}
+	ctx                 Context
+	source              RankIterator
+	intraAffinityWeight float64
+	penaltyNodes        map[string]struct{}
 }
 
 // NewNodeReschedulingPenaltyIterator is used to create a NodeReschedulingPenaltyIterator that
-// applies the given penalty for placement onto nodes in penaltyNodes
-func NewNodeReschedulingPenaltyIterator(ctx Context, source RankIterator, penalty float64) *NodeReschedulingPenaltyIterator {
+// applies the given scoring penalty for placement onto nodes in penaltyNodes
+func NewNodeReschedulingPenaltyIterator(ctx Context, source RankIterator) *NodeReschedulingPenaltyIterator {
 	iter := &NodeReschedulingPenaltyIterator{
-		ctx:     ctx,
-		source:  source,
-		penalty: penalty,
+		ctx:    ctx,
+		source: source,
 	}
 	return iter
 }
@@ -339,8 +352,8 @@ func (iter *NodeReschedulingPenaltyIterator) Next() *RankedNode {
 
 		_, ok := iter.penaltyNodes[option.Node.ID]
 		if ok {
-			option.Score -= iter.penalty
-			iter.ctx.Metrics().ScoreNode(option.Node, "node-anti-affinity", iter.penalty)
+			option.Scores = append(option.Scores, -1)
+			iter.ctx.Metrics().ScoreNode(option.Node, "node-anti-affinity", iter.intraAffinityWeight)
 		}
 		return option
 	}
@@ -349,4 +362,35 @@ func (iter *NodeReschedulingPenaltyIterator) Next() *RankedNode {
 func (iter *NodeReschedulingPenaltyIterator) Reset() {
 	iter.penaltyNodes = make(map[string]struct{})
 	iter.source.Reset()
+}
+
+type ScoreNormalizationIterator struct {
+	ctx    Context
+	source RankIterator
+}
+
+func NewScoreNormalizationIterator(ctx Context, source RankIterator) *ScoreNormalizationIterator {
+	return &ScoreNormalizationIterator{
+		ctx:    ctx,
+		source: source}
+}
+
+func (iter *ScoreNormalizationIterator) Reset() {
+	iter.source.Reset()
+}
+
+func (iter *ScoreNormalizationIterator) Next() *RankedNode {
+	option := iter.source.Next()
+	if option == nil {
+		return nil
+	}
+	numScorers := len(option.Scores)
+	if numScorers > 0 {
+		sum := 0.0
+		for _, score := range option.Scores {
+			sum += score
+		}
+		option.FinalScore = sum / float64(numScorers)
+	}
+	return option
 }
