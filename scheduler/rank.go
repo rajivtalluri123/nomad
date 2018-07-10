@@ -323,10 +323,9 @@ func (iter *JobAntiAffinityIterator) Reset() {
 // a node that had a previous failed allocation for the same job.
 // This is used when attempting to reschedule a failed alloc
 type NodeReschedulingPenaltyIterator struct {
-	ctx                 Context
-	source              RankIterator
-	intraAffinityWeight float64
-	penaltyNodes        map[string]struct{}
+	ctx          Context
+	source       RankIterator
+	penaltyNodes map[string]struct{}
 }
 
 // NewNodeReschedulingPenaltyIterator is used to create a NodeReschedulingPenaltyIterator that
@@ -353,7 +352,7 @@ func (iter *NodeReschedulingPenaltyIterator) Next() *RankedNode {
 		_, ok := iter.penaltyNodes[option.Node.ID]
 		if ok {
 			option.Scores = append(option.Scores, -1)
-			iter.ctx.Metrics().ScoreNode(option.Node, "node-anti-affinity", iter.intraAffinityWeight)
+			iter.ctx.Metrics().ScoreNode(option.Node, "node-anti-affinity", -1)
 		}
 		return option
 	}
