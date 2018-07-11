@@ -5264,8 +5264,6 @@ func (c *Constraint) Validate() error {
 }
 
 const (
-	AffinityRegex          = "regexp"
-	AffinityVersion        = "version"
 	AffinitySetContainsAll = "set_contains_all"
 	AffinitySetContainsAny = "set_contains_any"
 )
@@ -5299,7 +5297,7 @@ func (a *Affinity) String() string {
 	if a.str != "" {
 		return a.str
 	}
-	a.str = fmt.Sprintf("%s %s %s %s", a.LTarget, a.Operand, a.RTarget, a.Weight)
+	a.str = fmt.Sprintf("%s %s %s %v", a.LTarget, a.Operand, a.RTarget, a.Weight)
 	return a.str
 }
 
@@ -5315,11 +5313,11 @@ func (a *Affinity) Validate() error {
 		if a.RTarget == "" {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Set contains operators require an RTarget"))
 		}
-	case AffinityRegex:
+	case ConstraintRegex:
 		if _, err := regexp.Compile(a.RTarget); err != nil {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Regular expression failed to compile: %v", err))
 		}
-	case AffinityVersion:
+	case ConstraintVersion:
 		if _, err := version.NewConstraint(a.RTarget); err != nil {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Version affinity is invalid: %v", err))
 		}

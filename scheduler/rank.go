@@ -3,6 +3,8 @@ package scheduler
 import (
 	"fmt"
 
+	"math"
+
 	"github.com/hashicorp/nomad/nomad/structs"
 )
 
@@ -352,7 +354,7 @@ func (iter *NodeReschedulingPenaltyIterator) Next() *RankedNode {
 		_, ok := iter.penaltyNodes[option.Node.ID]
 		if ok {
 			option.Scores = append(option.Scores, -1)
-			iter.ctx.Metrics().ScoreNode(option.Node, "node-anti-affinity", -1)
+			iter.ctx.Metrics().ScoreNode(option.Node, "node-reschedule-penalty", -1)
 		}
 		return option
 	}
@@ -361,6 +363,71 @@ func (iter *NodeReschedulingPenaltyIterator) Next() *RankedNode {
 func (iter *NodeReschedulingPenaltyIterator) Reset() {
 	iter.penaltyNodes = make(map[string]struct{})
 	iter.source.Reset()
+}
+
+type NodeAffinityIterator struct {
+	ctx        Context
+	source     RankIterator
+	affinities []*structs.Affinity
+}
+
+func NewNodeAffinityIterator(ctx Context, source RankIterator) *NodeAffinityIterator {
+	return &NodeAffinityIterator{
+		ctx:    ctx,
+		source: source,
+	}
+}
+
+func (iter *NodeAffinityIterator) SetTaskGroup(tg *structs.TaskGroup) {
+	if tg.Affinities != nil {
+		iter.affinities = tg.Affinities
+	}
+}
+
+func (iter *NodeAffinityIterator) Reset() {
+	iter.source.Reset()
+}
+
+func (iter *NodeAffinityIterator) Next() *RankedNode {
+	option := iter.source.Next()
+	if option == nil {
+		return nil
+	}
+	if len(iter.affinities) == 0 {
+		return option
+	}
+	sumWeight := 0.0
+	for _, affinity := range iter.affinities {
+		sumWeight += math.Abs(affinity.Weight)
+	}
+
+	totalAffinityScore := 0.0
+	for _, affinity := range iter.affinities {
+		if matchesAffinity(iter.ctx, affinity, option.Node) {
+			normScore := affinity.Weight / sumWeight
+			totalAffinityScore += normScore
+		}
+	}
+	if totalAffinityScore != 0.0 {
+		option.Scores = append(option.Scores, totalAffinityScore)
+		iter.ctx.Metrics().ScoreNode(option.Node, "node-affinity", totalAffinityScore)
+	}
+	return option
+}
+
+func matchesAffinity(ctx Context, affinity *structs.Affinity, option *structs.Node) bool {
+	// Resolve the targets
+	lVal, ok := resolveTarget(affinity.LTarget, option)
+	if !ok {
+		return false
+	}
+	rVal, ok := resolveTarget(affinity.RTarget, option)
+	if !ok {
+		return false
+	}
+
+	// Check if satisfied
+	return checkAffinity(ctx, affinity.Operand, lVal, rVal)
 }
 
 type ScoreNormalizationIterator struct {

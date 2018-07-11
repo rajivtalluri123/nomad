@@ -486,3 +486,152 @@ func TestNodeAntiAffinity_PenaltyNodes(t *testing.T) {
 	require.Equal(0.0, out[1].FinalScore)
 
 }
+
+func TestScoreNormalizationIterator(t *testing.T) {
+	// Test normalized scores when there is more than one scorer
+	_, ctx := testContext(t)
+	nodes := []*RankedNode{
+		{
+			Node: &structs.Node{
+				ID: uuid.Generate(),
+			},
+		},
+		{
+			Node: &structs.Node{
+				ID: uuid.Generate(),
+			},
+		},
+	}
+	static := NewStaticRankIterator(ctx, nodes)
+
+	job := mock.Job()
+	job.ID = "foo"
+	tg := job.TaskGroups[0]
+	tg.Count = 4
+
+	// Add a planned alloc to node1 that fills it
+	plan := ctx.Plan()
+	plan.NodeAllocation[nodes[0].Node.ID] = []*structs.Allocation{
+		{
+			ID:        uuid.Generate(),
+			JobID:     "foo",
+			TaskGroup: tg.Name,
+		},
+		{
+			ID:        uuid.Generate(),
+			JobID:     "foo",
+			TaskGroup: tg.Name,
+		},
+	}
+
+	// Add a planned alloc to node2 that half fills it
+	plan.NodeAllocation[nodes[1].Node.ID] = []*structs.Allocation{
+		{
+			JobID: "bar",
+		},
+	}
+
+	jobAntiAff := NewJobAntiAffinityIterator(ctx, static, "foo")
+	jobAntiAff.SetJob(job)
+	jobAntiAff.SetTaskGroup(tg)
+
+	nodeReschedulePenaltyIter := NewNodeReschedulingPenaltyIterator(ctx, jobAntiAff)
+	nodeReschedulePenaltyIter.SetPenaltyNodes(map[string]struct{}{nodes[0].Node.ID: {}})
+
+	scoreNorm := NewScoreNormalizationIterator(ctx, nodeReschedulePenaltyIter)
+
+	out := collectRanked(scoreNorm)
+	if len(out) != 2 {
+		t.Fatalf("Bad: %#v", out)
+	}
+	if out[0] != nodes[0] {
+		t.Fatalf("Bad: %v", out)
+	}
+	// Score should be averaged between both scorers
+	// -0.5 from job anti affinity and -1 from node rescheduling penalty
+	if out[0].FinalScore != -0.75 {
+		t.Fatalf("Bad Score: %#v", out[0].FinalScore)
+	}
+
+	if out[1] != nodes[1] {
+		t.Fatalf("Bad Node: %v", out)
+	}
+	if out[1].FinalScore != 0.0 {
+		t.Fatalf("Bad Score: %v", out[1].FinalScore)
+	}
+}
+
+func TestNodeAffinityIterator(t *testing.T) {
+	_, ctx := testContext(t)
+	nodes := []*RankedNode{
+		{Node: mock.Node()},
+		{Node: mock.Node()},
+		{Node: mock.Node()},
+		{Node: mock.Node()},
+	}
+
+	nodes[0].Node.Attributes["kernel.version"] = "4.9"
+	nodes[1].Node.Datacenter = "dc2"
+	nodes[2].Node.Datacenter = "dc2"
+	nodes[2].Node.NodeClass = "large"
+
+	affinities := []*structs.Affinity{
+		{
+			Operand: "=",
+			LTarget: "${node.datacenter}",
+			RTarget: "dc1",
+			Weight:  200,
+		},
+		{
+			Operand: "=",
+			LTarget: "${node.datacenter}",
+			RTarget: "dc2",
+			Weight:  -100,
+		},
+		{
+			Operand: "version",
+			LTarget: "${attr.kernel.version}",
+			RTarget: ">4.0",
+			Weight:  50,
+		},
+		{
+			Operand: "is",
+			LTarget: "${node.class}",
+			RTarget: "large",
+			Weight:  50,
+		},
+	}
+
+	static := NewStaticRankIterator(ctx, nodes)
+
+	job := mock.Job()
+	job.ID = "foo"
+	tg := job.TaskGroups[0]
+	tg.Affinities = affinities
+
+	nodeAffinity := NewNodeAffinityIterator(ctx, static)
+	nodeAffinity.SetTaskGroup(tg)
+
+	scoreNorm := NewScoreNormalizationIterator(ctx, nodeAffinity)
+
+	out := collectRanked(scoreNorm)
+	expectedScores := make(map[string]float64)
+	// Total weight = 400
+	// Node 0 matches two affinities(dc and kernel version), total weight =250
+	expectedScores[nodes[0].Node.ID] = 0.625
+
+	// Node 1 matches an anti affinity, weight = -100
+	expectedScores[nodes[1].Node.ID] = -0.25
+
+	// Node 2 matches one affinity(node class) with weight 50
+	expectedScores[nodes[2].Node.ID] = -0.125
+
+	// Node 3 matches one affinity (dc) with weight = 200
+	expectedScores[nodes[3].Node.ID] = 0.5
+
+	require := require.New(t)
+	for _, n := range out {
+		require.Equal(expectedScores[n.Node.ID], n.FinalScore)
+	}
+
+}

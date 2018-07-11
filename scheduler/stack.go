@@ -60,6 +60,7 @@ type GenericStack struct {
 	nodeReschedulingPenalty    *NodeReschedulingPenaltyIterator
 	limit                      *LimitIterator
 	maxScore                   *MaxScoreIterator
+	nodeAffinity               *NodeAffinityIterator
 	scoreNorm                  *ScoreNormalizationIterator
 }
 
@@ -118,7 +119,9 @@ func NewGenericStack(batch bool, ctx Context) *GenericStack {
 
 	s.nodeReschedulingPenalty = NewNodeReschedulingPenaltyIterator(ctx, s.jobAntiAff)
 
-	s.scoreNorm = NewScoreNormalizationIterator(ctx, s.nodeReschedulingPenalty)
+	s.nodeAffinity = NewNodeAffinityIterator(ctx, s.nodeReschedulingPenalty)
+
+	s.scoreNorm = NewScoreNormalizationIterator(ctx, s.nodeAffinity)
 
 	// Apply a limit function. This is to avoid scanning *every* possible node.
 	s.limit = NewLimitIterator(ctx, s.scoreNorm, 2, skipScoreThreshold, maxSkip)
@@ -198,6 +201,10 @@ func (s *GenericStack) Select(tg *structs.TaskGroup, options *SelectOptions) (*R
 	s.jobAntiAff.SetTaskGroup(tg)
 	if options != nil {
 		s.nodeReschedulingPenalty.SetPenaltyNodes(options.PenaltyNodeIDs)
+	}
+	s.nodeAffinity.SetTaskGroup(tg)
+	if len(tg.Affinities) > 0 {
+		s.limit.SetLimit(math.MaxInt32)
 	}
 
 	if contextual, ok := s.quota.(ContextualIterator); ok {
