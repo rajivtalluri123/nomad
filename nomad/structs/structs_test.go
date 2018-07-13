@@ -1578,6 +1578,14 @@ func TestAffinity_Validate(t *testing.T) {
 		},
 		{
 			affinity: &Affinity{
+				Operand: "foo",
+				LTarget: "${meta.node_class}",
+				Weight:  10,
+			},
+			err: fmt.Errorf("Unknown affinity operator \"foo\""),
+		},
+		{
+			affinity: &Affinity{
 				Operand: "=",
 				LTarget: "${meta.node_class}",
 				Weight:  10,

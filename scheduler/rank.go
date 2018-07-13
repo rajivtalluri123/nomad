@@ -242,7 +242,7 @@ OUTER:
 		fitness := structs.ScoreFit(option.Node, util)
 		normalizedFit := float64(fitness) / float64(binPackingMaxFitScore)
 		option.Scores = append(option.Scores, normalizedFit)
-		iter.ctx.Metrics().ScoreNode(option.Node, "binpack", fitness)
+		iter.ctx.Metrics().ScoreNode(option.Node, "binpack", normalizedFit)
 		return option
 	}
 }
@@ -366,9 +366,10 @@ func (iter *NodeReschedulingPenaltyIterator) Reset() {
 }
 
 type NodeAffinityIterator struct {
-	ctx        Context
-	source     RankIterator
-	affinities []*structs.Affinity
+	ctx           Context
+	source        RankIterator
+	jobAffinities []*structs.Affinity
+	affinities    []*structs.Affinity
 }
 
 func NewNodeAffinityIterator(ctx Context, source RankIterator) *NodeAffinityIterator {
@@ -378,14 +379,32 @@ func NewNodeAffinityIterator(ctx Context, source RankIterator) *NodeAffinityIter
 	}
 }
 
+func (iter *NodeAffinityIterator) SetJob(job *structs.Job) {
+	if job.Affinities != nil {
+		iter.jobAffinities = job.Affinities
+	}
+}
+
 func (iter *NodeAffinityIterator) SetTaskGroup(tg *structs.TaskGroup) {
+	// Merge job affinities
+	if iter.jobAffinities != nil {
+		iter.affinities = append(iter.affinities, iter.jobAffinities...)
+	}
+
+	// Merge task group affinities and task affinities
 	if tg.Affinities != nil {
-		iter.affinities = tg.Affinities
+		iter.affinities = append(iter.affinities, tg.Affinities...)
+	}
+	for _, task := range tg.Tasks {
+		if task.Affinities != nil {
+			iter.affinities = append(iter.affinities, task.Affinities...)
+		}
 	}
 }
 
 func (iter *NodeAffinityIterator) Reset() {
 	iter.source.Reset()
+	iter.affinities = nil
 }
 
 func (iter *NodeAffinityIterator) Next() *RankedNode {
@@ -396,6 +415,7 @@ func (iter *NodeAffinityIterator) Next() *RankedNode {
 	if len(iter.affinities) == 0 {
 		return option
 	}
+	// TODO(preetha): we should calculate normalized weights once and reuse it here
 	sumWeight := 0.0
 	for _, affinity := range iter.affinities {
 		sumWeight += math.Abs(affinity.Weight)
@@ -458,5 +478,6 @@ func (iter *ScoreNormalizationIterator) Next() *RankedNode {
 		}
 		option.FinalScore = sum / float64(numScorers)
 	}
+	iter.ctx.Metrics().ScoreNode(option.Node, "normalized-score", option.FinalScore)
 	return option
 }

@@ -2004,6 +2004,10 @@ type Job struct {
 	// all the task groups and tasks.
 	Constraints []*Constraint
 
+	// Affinities can be specified at the job level to express
+	// scheduling preferences that apply to all groups and tasks
+	Affinities []*Affinity
+
 	// TaskGroups are the collections of task groups that this job needs
 	// to run. Each task group is an atomic unit of scheduling and placement.
 	TaskGroups []*TaskGroup
@@ -2164,6 +2168,13 @@ func (j *Job) Validate() error {
 	for idx, constr := range j.Constraints {
 		if err := constr.Validate(); err != nil {
 			outer := fmt.Errorf("Constraint %d validation failed: %s", idx+1, err)
+			mErr.Errors = append(mErr.Errors, outer)
+		}
+	}
+
+	for idx, affinity := range j.Affinities {
+		if err := affinity.Validate(); err != nil {
+			outer := fmt.Errorf("Affinity %d validation failed: %s", idx+1, err)
 			mErr.Errors = append(mErr.Errors, outer)
 		}
 	}
@@ -4019,6 +4030,10 @@ type Task struct {
 	// the particular task.
 	Constraints []*Constraint
 
+	// Affinities can be specified at the task level to express
+	// scheduling preferences
+	Affinities []*Affinity
+
 	// Resources is the resources needed by this task
 	Resources *Resources
 
@@ -4197,6 +4212,13 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk) error {
 		switch constr.Operand {
 		case ConstraintDistinctHosts, ConstraintDistinctProperty:
 			outer := fmt.Errorf("Constraint %d has disallowed Operand at task level: %s", idx+1, constr.Operand)
+			mErr.Errors = append(mErr.Errors, outer)
+		}
+	}
+
+	for idx, affinity := range t.Affinities {
+		if err := affinity.Validate(); err != nil {
+			outer := fmt.Errorf("Affinity %d validation failed: %s", idx+1, err)
 			mErr.Errors = append(mErr.Errors, outer)
 		}
 	}
@@ -5272,8 +5294,8 @@ const (
 type Affinity struct {
 	LTarget string  // Left-hand target
 	RTarget string  // Right-hand target
-	Operand string  // Constraint operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
-	Weight  float64 // Normalized weight applied to nodes that match the affinity. Can be negative
+	Operand string  // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+	Weight  float64 // Weight applied to nodes that match the affinity. Can be negative
 	str     string  // Memoized string
 }
 
@@ -5326,7 +5348,7 @@ func (a *Affinity) Validate() error {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Operator %q requires an RTarget", a.Operand))
 		}
 	default:
-		mErr.Errors = append(mErr.Errors, fmt.Errorf("Unknown constraint type %q", a.Operand))
+		mErr.Errors = append(mErr.Errors, fmt.Errorf("Unknown affinity operator %q", a.Operand))
 	}
 
 	// Ensure we have an LTarget

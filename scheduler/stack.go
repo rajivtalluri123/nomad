@@ -159,6 +159,7 @@ func (s *GenericStack) SetJob(job *structs.Job) {
 	s.distinctPropertyConstraint.SetJob(job)
 	s.binPack.SetPriority(job.Priority)
 	s.jobAntiAff.SetJob(job)
+	s.nodeAffinity.SetJob(job)
 	s.ctx.Eligibility().SetJob(job)
 
 	if contextual, ok := s.quota.(ContextualIterator); ok {
