@@ -10,7 +10,10 @@ name = "client1"
 # Enable the client
 client {
   enabled = true
-
+  node_class = "m1"
+  meta {
+   "team" = "web"
+  }
   server_join {
     retry_join = ["127.0.0.1:4647", "127.0.0.1:5647", "127.0.0.1:6647"]
   }
